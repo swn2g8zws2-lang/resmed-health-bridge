@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "resmed-health-bridge"
+version = "0.1.0"
+description = "Private, read-only MCP bridge for nightly CPAP therapy metrics"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+  "mcp==2.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2,<9"]
+
+[project.scripts]
+resmed-health-bridge = "resmed_health_bridge.server:main"
+resmed-import-oscar = "resmed_health_bridge.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/resmed_health_bridge"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
