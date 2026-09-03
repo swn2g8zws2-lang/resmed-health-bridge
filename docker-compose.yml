@@ -1,0 +1,24 @@
+services:
+  bridge:
+    build: .
+    restart: unless-stopped
+    environment:
+      RESMED_DB_PATH: /data/resmed.sqlite3
+      RESMED_MCP_TRANSPORT: streamable-http
+      RESMED_MCP_HOST: 0.0.0.0
+      RESMED_MCP_PORT: 8000
+    volumes:
+      - bridge-data:/data
+    # Loopback only: put an authenticated TLS reverse proxy in front for remote use.
+    ports:
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  bridge-data:
