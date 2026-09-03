@@ -1,0 +1,24 @@
+services:
+  bridge:
+    build: .
+    restart: unless-stopped
+    stdin_open: true
+    network_mode: none
+    environment:
+      RESMED_DB_PATH: /data/resmed.sqlite3
+      RESMED_MCP_TRANSPORT: stdio
+      RESMED_MCP_HOST: 127.0.0.1
+      RESMED_MCP_PORT: 8000
+    volumes:
+      - bridge-data:/data
+    # No network port is exposed. Use an interactive stdio MCP client locally.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  bridge-data:
