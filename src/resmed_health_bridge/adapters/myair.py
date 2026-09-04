@@ -255,8 +255,6 @@ class ResMedMyAirAdapter:
         if not isinstance(items, list):
             raise MyAirError(MyAirFailure.MALFORMED_RESPONSE, "nightly data")
         records = [_normalize_record(item) for item in items]
-        if any(record.night < query_start or record.night > query_end for record in records):
-            raise MyAirError(MyAirFailure.MALFORMED_RESPONSE, "nightly data")
         return sorted(
             (record for record in records if start <= record.night <= end),
             key=lambda record: record.night,
