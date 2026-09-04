@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from enum import Enum
 import json
+import socket
+import ssl
 from typing import Any, Callable, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -24,8 +27,30 @@ MAX_FETCH_DAYS = 366
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
+class MyAirFailure(str, Enum):
+    """Stable, non-sensitive failure categories suitable for support reports."""
+
+    HTTP_STATUS = "http_status"
+    DNS = "dns_failure"
+    TLS = "tls_failure"
+    TIMEOUT = "network_timeout"
+    NETWORK = "network_failure"
+    CREDENTIAL_REJECTION = "credential_rejection"
+    MALFORMED_RESPONSE = "malformed_response"
+    RESPONSE_TOO_LARGE = "response_too_large"
+
+
 class MyAirError(RuntimeError):
-    """A deliberately non-sensitive description of an upstream failure."""
+    """A deliberately non-sensitive, machine-classifiable upstream failure."""
+
+    def __init__(
+        self, category: MyAirFailure, operation: str, *, status: int | None = None
+    ) -> None:
+        self.category = category
+        self.operation = operation
+        self.status = status
+        detail = f"; HTTP status {status}" if status is not None else ""
+        super().__init__(f"myAir {operation} failed ({category.value}{detail})")
 
 
 class MyAirAdapter(Protocol):
@@ -46,13 +71,28 @@ def _urlopen_transport(request: Request) -> _Response:
         with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed HTTPS origin
             body = response.read(MAX_RESPONSE_BYTES + 1)
             if len(body) > MAX_RESPONSE_BYTES:
-                raise MyAirError("myAir response exceeded the size limit")
+                raise MyAirError(MyAirFailure.RESPONSE_TOO_LARGE, "request")
             return _Response(response.status, body)
     except HTTPError as error:
-        # Never include an upstream response body: it may contain account data.
-        raise MyAirError(f"myAir request failed with HTTP status {error.code}") from None
-    except (URLError, TimeoutError, OSError):
-        raise MyAirError("myAir request failed") from None
+        # Deliberately do not read the error body: it may contain account data.
+        return _Response(error.code, b"")
+    except URLError as error:
+        reason = error.reason
+        if isinstance(reason, socket.gaierror):
+            category = MyAirFailure.DNS
+        elif isinstance(reason, ssl.SSLError):
+            category = MyAirFailure.TLS
+        elif isinstance(reason, (TimeoutError, socket.timeout)):
+            category = MyAirFailure.TIMEOUT
+        else:
+            category = MyAirFailure.NETWORK
+        raise MyAirError(category, "request") from None
+    except ssl.SSLError:
+        raise MyAirError(MyAirFailure.TLS, "request") from None
+    except (TimeoutError, socket.timeout):
+        raise MyAirError(MyAirFailure.TIMEOUT, "request") from None
+    except OSError:
+        raise MyAirError(MyAirFailure.NETWORK, "request") from None
 
 
 class ResMedMyAirAdapter:
@@ -73,13 +113,13 @@ class ResMedMyAirAdapter:
             headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
             method="GET",
         )
-        payload = self._json(self._transport(request), "nightly data")
+        payload = self._json(self._send(request, "nightly data"), "nightly data")
         raw_records = payload.get("sleepRecords") if isinstance(payload, dict) else None
         if not isinstance(raw_records, list):
-            raise MyAirError("myAir nightly-data response has an unexpected shape")
+            raise MyAirError(MyAirFailure.MALFORMED_RESPONSE, "nightly data")
         records = [_normalize_record(item) for item in raw_records]
         if any(record.night < start or record.night > end for record in records):
-            raise MyAirError("myAir returned a record outside the requested range")
+            raise MyAirError(MyAirFailure.MALFORMED_RESPONSE, "nightly data")
         return sorted(records, key=lambda record: record.night)
 
     def _authenticate(self) -> str:
@@ -90,22 +130,35 @@ class ResMedMyAirAdapter:
             headers={"Accept": "application/json", "Content-Type": "application/json"},
             method="POST",
         )
-        payload = self._json(self._transport(request), "authentication")
+        payload = self._json(self._send(request, "authentication"), "authentication")
         token = payload.get("token") if isinstance(payload, dict) else None
         if not isinstance(token, str) or not token:
-            raise MyAirError("myAir authentication response did not contain a token")
+            raise MyAirError(MyAirFailure.MALFORMED_RESPONSE, "authentication")
         return token
+
+    def _send(self, request: Request, operation: str) -> _Response:
+        try:
+            return self._transport(request)
+        except MyAirError as error:
+            # Add safe operation context without retaining an exception chain that
+            # might contain transport details from a custom transport.
+            raise MyAirError(error.category, operation, status=error.status) from None
 
     @staticmethod
     def _json(response: _Response, operation: str) -> Any:
         if response.status < 200 or response.status >= 300:
-            raise MyAirError(f"myAir {operation} failed with HTTP status {response.status}")
+            category = (
+                MyAirFailure.CREDENTIAL_REJECTION
+                if operation == "authentication" and response.status == 401
+                else MyAirFailure.HTTP_STATUS
+            )
+            raise MyAirError(category, operation, status=response.status)
         if len(response.body) > MAX_RESPONSE_BYTES:
-            raise MyAirError("myAir response exceeded the size limit")
+            raise MyAirError(MyAirFailure.RESPONSE_TOO_LARGE, operation)
         try:
             return json.loads(response.body)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise MyAirError(f"myAir {operation} response was not valid JSON") from None
+            raise MyAirError(MyAirFailure.MALFORMED_RESPONSE, operation) from None
 
 
 def _validate_range(start: date, end: date) -> None:
@@ -117,7 +170,7 @@ def _validate_range(start: date, end: date) -> None:
 
 def _normalize_record(value: Any) -> NightlyRecord:
     if not isinstance(value, dict):
-        raise MyAirError("myAir nightly-data response contains an invalid record")
+        raise MyAirError(MyAirFailure.MALFORMED_RESPONSE, "nightly data")
     try:
         # The reviewed response reports usage as seconds and calls AHI
         # ``eventsPerHour``. It does not include 95th-percentile summary fields.
@@ -133,7 +186,7 @@ def _normalize_record(value: Any) -> NightlyRecord:
             source="myair",
         )
     except (KeyError, TypeError, ValueError, OverflowError):
-        raise MyAirError("myAir nightly-data response contains an invalid record") from None
+        raise MyAirError(MyAirFailure.MALFORMED_RESPONSE, "nightly data") from None
 
 
 def _optional_number(value: Any) -> float | None:

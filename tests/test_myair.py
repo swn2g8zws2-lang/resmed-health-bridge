@@ -1,5 +1,9 @@
 from datetime import date
 import json
+import socket
+import ssl
+from urllib.error import HTTPError, URLError
+from urllib.request import Request
 
 import pytest
 
@@ -8,8 +12,10 @@ from resmed_health_bridge.adapters.myair import (
     LOGIN_PATH,
     SLEEP_RECORDS_PATH,
     MyAirError,
+    MyAirFailure,
     ResMedMyAirAdapter,
     _Response,
+    _urlopen_transport,
     ingest_myair,
 )
 from resmed_health_bridge.storage import NightlyStore
@@ -71,18 +77,51 @@ def test_nightly_data_is_normalized_and_sorted():
     ]
 
 
-@pytest.mark.parametrize("responses, message", [
-    ([_Response(401, b'{"detail":"synthetic"}')], "HTTP status 401"),
-    ([response({"unexpected": "shape"})], "did not contain a token"),
-    ([response({"token": "x"}), _Response(200, b"not-json")], "not valid JSON"),
-    ([response({"token": "x"}), response({"sleepRecords": [{}]})], "invalid record"),
+@pytest.mark.parametrize("responses, category, status", [
+    ([_Response(401, b'{"detail":"synthetic"}')], MyAirFailure.CREDENTIAL_REJECTION, 401),
+    ([_Response(403, b'{"detail":"synthetic"}')], MyAirFailure.HTTP_STATUS, 403),
+    ([response({"unexpected": "shape"})], MyAirFailure.MALFORMED_RESPONSE, None),
+    ([response({"token": "x"}), _Response(200, b"not-json")], MyAirFailure.MALFORMED_RESPONSE, None),
+    ([response({"token": "x"}), response({"sleepRecords": [{}]})], MyAirFailure.MALFORMED_RESPONSE, None),
 ])
-def test_failures_are_sanitized(responses, message):
-    with pytest.raises(MyAirError, match=message) as caught:
+def test_failures_are_sanitized_and_classified(responses, category, status):
+    with pytest.raises(MyAirError) as caught:
         ResMedMyAirAdapter("secret-user", "secret-password", transport=MockTransport(responses)).fetch_range(
             date(2026, 1, 1), date(2026, 1, 1)
         )
+    assert caught.value.category is category
+    assert caught.value.status == status
     assert "secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("reason, category", [
+    (socket.gaierror("secret DNS detail"), MyAirFailure.DNS),
+    (ssl.SSLError("secret TLS detail"), MyAirFailure.TLS),
+    (TimeoutError("secret timeout detail"), MyAirFailure.TIMEOUT),
+    (ConnectionError("secret network detail"), MyAirFailure.NETWORK),
+])
+def test_transport_failures_are_classified_without_leaking_details(monkeypatch, reason, category):
+    def fail(_request, timeout):
+        assert timeout == 30
+        raise URLError(reason)
+
+    monkeypatch.setattr("resmed_health_bridge.adapters.myair.urlopen", fail)
+    with pytest.raises(MyAirError) as caught:
+        _urlopen_transport(Request(API_ORIGIN + LOGIN_PATH))
+    assert caught.value.category is category
+    assert caught.value.status is None
+    assert "secret" not in str(caught.value)
+
+
+def test_http_error_body_is_not_read_or_exposed(monkeypatch):
+    error = HTTPError(API_ORIGIN + LOGIN_PATH, 429, "secret reason", {}, None)
+
+    def fail(_request, timeout):
+        raise error
+
+    monkeypatch.setattr("resmed_health_bridge.adapters.myair.urlopen", fail)
+    result = _urlopen_transport(Request(API_ORIGIN + LOGIN_PATH))
+    assert result == _Response(429, b"")
 
 
 def test_range_is_bounded_before_authentication():

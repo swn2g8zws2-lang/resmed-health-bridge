@@ -82,6 +82,27 @@ Credentials and bearer tokens are held only in memory. They are not written to S
 or included in adapter errors. Avoid shell history for literal secrets and do not enable
 HTTP debug logging or capture raw upstream traffic.
 
+Authentication and transport errors expose only a stable category and, when an HTTP
+response was received, its numeric status. Categories distinguish credential rejection
+(`401` during authentication), other HTTP status, DNS, TLS, timeout, other network,
+oversize response, and malformed JSON/response shape. Upstream error bodies and exception
+details are discarded. An HTTP status alone is not treated as proof of a region/origin
+problem; without a documented status mapping that would be a guess.
+
+The public-reference check on 2026-09-04 could not retrieve GitHub from the restricted
+development environment (the unauthenticated HTTPS request was rejected by its network
+proxy). Consequently, this change does **not** claim or introduce an endpoint, request,
+header, origin, or regional-host change. The last successfully recorded review remains
+the 2026-09-03 MIT-licensed reference described above.
+
+For the next live check, run exactly one bounded, one-night import from a private Windows
+terminal with credentials supplied by its environment/secret manager. Do not enable HTTP
+debugging, capture traffic, or share anything except the category and optional HTTP status:
+
+```powershell
+resmed-import-myair 2026-09-03 2026-09-03
+```
+
 ### Import SD-card / OSCAR-compatible data
 
 Export or produce a summary CSV with these headers:
