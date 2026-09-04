@@ -19,6 +19,7 @@ dev = ["pytest>=8.2,<9"]
 [project.scripts]
 resmed-health-bridge = "resmed_health_bridge.server:main"
 resmed-import-oscar = "resmed_health_bridge.cli:main"
+resmed-import-myair = "resmed_health_bridge.myair_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/resmed_health_bridge"]

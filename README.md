@@ -14,7 +14,7 @@ can later be combined with Apple Health and Withings data.
 - A normalized nightly model and local SQLite cache.
 - An offline CSV fallback for summary data derived from an AirSense 11 SD card via an
   OSCAR-compatible workflow.
-- A deliberately unimplemented myAir adapter boundary.
+- A bounded, explicit myAir importer using the unofficial read-only consumer API.
 - Container configuration with a non-root user, dropped capabilities, read-only root
   filesystem, no network, and no published port.
 
@@ -26,16 +26,18 @@ pressure, and source. It intentionally does not store device serial numbers.
 ```text
 OSCAR-compatible CSV --> adapters/oscar.py --\
                                                > NightlyStore (SQLite) --> TherapyQueries --> MCP
-future unofficial myAir --> adapters/myair.py -/
+unofficial myAir --------> adapters/myair.py -/
 ```
 
 `myAir` access is unofficial and unstable. ResMed does not provide a documented public
-consumer API contract used by this project. Consequently, the scaffold does **not**
-invent URLs, authentication flows, or response schemas. `UnavailableMyAirAdapter`
-fails explicitly. Before implementing it, validate current terms and behavior, inspect
-the license of every third-party project considered, and implement against the local
-read-only adapter contract. No open-source ResMed integration code has been copied into
-this repository.
+consumer API contract used by this project. The adapter is an independent implementation
+based on a review of the current `prestomation/resmed_myair_sensors` project: its MIT
+license, email/password `POST /v1/login` authentication, bearer token handling,
+read-only `GET /v1/sleepRecords` date-range request, and `sleepRecords` response were
+recorded before implementation. No third-party source was copied. All upstream paths
+are fixed in `adapters/myair.py`; callers cannot supply an origin or arbitrary endpoint.
+The review was performed on 2026-09-03. Because this is an unsupported interface, check
+the reference project and myAir terms again before enabling it.
 
 ## Setup
 
@@ -50,8 +52,27 @@ cp .env.example .env
 
 `.env` is ignored by Git. The application reads configuration from the process
 environment; it does not parse `.env` itself. Export variables manually or use a trusted
-secret manager/process supervisor. `MYAIR_*` placeholders are reserved for a future
-adapter and are not currently consumed.
+secret manager/process supervisor.
+
+### Import myAir summaries (unofficial)
+
+The command makes one authentication request followed by one read-only nightly-summary
+request. It neither discovers nor stores a device serial number. Ranges are limited to
+366 inclusive days, responses to 2 MiB, and only date, usage, and events-per-hour (AHI)
+are retained. The summary endpoint does not supply the normalized 95th-percentile leak
+or pressure fields, so those values remain null.
+
+```bash
+export RESMED_DB_PATH="$HOME/.local/share/resmed-bridge/resmed.sqlite3"
+export MYAIR_USERNAME='your account email'
+export MYAIR_PASSWORD='read from your secret manager'
+resmed-import-myair 2026-01-01 2026-01-31
+unset MYAIR_USERNAME MYAIR_PASSWORD
+```
+
+Credentials and bearer tokens are held only in memory. They are not written to SQLite
+or included in adapter errors. Avoid shell history for literal secrets and do not enable
+HTTP debug logging or capture raw upstream traffic.
 
 ### Import SD-card / OSCAR-compatible data
 
@@ -148,8 +169,11 @@ and host-level access controls for data at rest.
 
 ## Known limitations
 
-- There is no functioning myAir network integration; the isolated adapter documents the
-  intended read-only boundary and fails closed.
+- myAir is unofficial, can change without notice, currently targets the reviewed
+  `myair2-api.resmed.com` flow, and has no live-account integration test in CI.
+- The myAir summary response does not provide 95th-percentile leak or pressure, so those
+  normalized fields are null for myAir records. Score and mask-fit fields are deliberately
+  not retained by the current domain model.
 - No automatic sync scheduler, conflict provenance beyond `source`, pagination, timezone
   normalization, multi-user tenancy, or database encryption is provided.
 - A "night" is the date supplied by the import source. Day-boundary and timezone behavior
