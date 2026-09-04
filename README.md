@@ -29,15 +29,16 @@ OSCAR-compatible CSV --> adapters/oscar.py --\
 unofficial myAir --------> adapters/myair.py -/
 ```
 
-`myAir` access is unofficial and unstable. ResMed does not provide a documented public
-consumer API contract used by this project. The adapter is an independent implementation
-based on a review of the current `prestomation/resmed_myair_sensors` project: its MIT
-license, email/password `POST /v1/login` authentication, bearer token handling,
-read-only `GET /v1/sleepRecords` date-range request, and `sleepRecords` response were
-recorded before implementation. No third-party source was copied. All upstream paths
-are fixed in `adapters/myair.py`; callers cannot supply an origin or arbitrary endpoint.
-The review was performed on 2026-09-03. Because this is an unsupported interface, check
-the reference project and myAir terms again before enabling it.
+`myAir` access is unofficial, reverse-engineered, and unstable. ResMed does not provide a
+documented public consumer API contract used by this project, and the integration may
+break without notice. The adapter is an independent implementation based on a
+2026-09-03 review of the MIT-licensed `prestomation/resmed_myair_sensors` region,
+authentication, GraphQL transport, REST-client/query, and model sources. The reviewed
+North America flow uses Okta authentication, optional email MFA, OAuth Authorization
+Code with PKCE, and a fixed read-only GraphQL sleep-record operation. No third-party
+source was copied. All upstream hosts, paths, metadata, and the GraphQL document are
+fixed in `adapters/myair.py`; callers cannot supply a region, origin, arbitrary endpoint,
+or query. No unverified Europe or Australia configuration is included.
 
 ## Setup
 
@@ -64,19 +65,36 @@ secret manager/process supervisor.
 
 ### Import myAir summaries (unofficial)
 
-The command makes one authentication request followed by one read-only nightly-summary
-request. It neither discovers nor stores a device serial number. Ranges are limited to
-366 inclusive days, responses to 2 MiB, and only date, usage, and events-per-hour (AHI)
-are retained. The summary endpoint does not supply the normalized 95th-percentile leak
-or pressure fields, so those values remain null.
+The command performs the North America Okta/PKCE flow followed by one read-only GraphQL
+nightly-summary request. It neither calls the separate device query nor discovers or
+stores a device serial number. Input ranges remain bounded to 366 inclusive days; the
+current cloud operation exposes only the most recent 31 calendar days and rejects a
+requested date outside that window. Responses are limited to 2 MiB. Only date, usage in
+whole minutes, and AHI are retained. The verified summary semantics do not establish a
+95th-percentile leak in L/min and expose no pressure statistic, so both normalized fields
+remain null.
 
 ```bash
 export RESMED_DB_PATH="$HOME/.local/share/resmed-bridge/resmed.sqlite3"
 export MYAIR_USERNAME='your account email'
 export MYAIR_PASSWORD='read from your secret manager'
-resmed-import-myair 2026-01-01 2026-01-31
+resmed-import-myair 2026-09-03 2026-09-03
 unset MYAIR_USERNAME MYAIR_PASSWORD
 ```
+
+On Windows, a safe single-night smoke test is:
+
+```powershell
+.\.venv\Scripts\resmed-import-myair.exe 2026-09-03 2026-09-03
+```
+
+If Okta requires email MFA, the importer triggers the email challenge and then securely
+prompts for its verification code in the same process. Terminal input is not echoed, and
+the in-memory Okta transaction state is used continuously from challenge through
+verification. For controlled noninteractive use, the short-lived `MYAIR_MFA_CODE`
+environment variable remains supported; remove it immediately afterward. If neither a
+secure terminal nor that variable is available, the importer fails with the sanitized
+`mfa_required` category instead of attempting echoed input or starting another session.
 
 Credentials and bearer tokens are held only in memory. They are not written to SQLite
 or included in adapter errors. Avoid shell history for literal secrets and do not enable
@@ -89,19 +107,9 @@ oversize response, and malformed JSON/response shape. Upstream error bodies and 
 details are discarded. An HTTP status alone is not treated as proof of a region/origin
 problem; without a documented status mapping that would be a guess.
 
-The public-reference check on 2026-09-04 could not retrieve GitHub from the restricted
-development environment (the unauthenticated HTTPS request was rejected by its network
-proxy). Consequently, this change does **not** claim or introduce an endpoint, request,
-header, origin, or regional-host change. The last successfully recorded review remains
-the 2026-09-03 MIT-licensed reference described above.
-
-For the next live check, run exactly one bounded, one-night import from a private Windows
-terminal with credentials supplied by its environment/secret manager. Do not enable HTTP
-debugging, capture traffic, or share anything except the category and optional HTTP status:
-
-```powershell
-resmed-import-myair 2026-09-03 2026-09-03
-```
+For support, do not enable HTTP debugging, capture traffic, or share request headers,
+cookies, redirects, tokens, MFA codes, or response bodies. Share only the sanitized
+failure category and optional numeric HTTP status printed by the failure.
 
 ### Import SD-card / OSCAR-compatible data
 
@@ -198,8 +206,8 @@ and host-level access controls for data at rest.
 
 ## Known limitations
 
-- myAir is unofficial, can change without notice, currently targets the reviewed
-  `myair2-api.resmed.com` flow, and has no live-account integration test in CI.
+- myAir is unofficial, can change without notice, supports only the verified North
+  America Okta/GraphQL configuration, and has no live-account integration test in CI.
 - The myAir summary response does not provide 95th-percentile leak or pressure, so those
   normalized fields are null for myAir records. Score and mask-fit fields are deliberately
   not retained by the current domain model.

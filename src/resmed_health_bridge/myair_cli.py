@@ -2,11 +2,29 @@
 
 import argparse
 from datetime import date
+import getpass
 import os
+import sys
+import warnings
 
 from .adapters.myair import ResMedMyAirAdapter, ingest_myair
 from .config import Settings
 from .storage import NightlyStore
+
+
+def _read_mfa_code() -> str:
+    """Read a transient MFA code without echoing it or requiring a second process."""
+    configured = os.environ.get("MYAIR_MFA_CODE")
+    if configured:
+        return configured
+    if not sys.stdin.isatty():
+        return ""
+    # getpass can otherwise warn and fall back to echoed stdin when secure terminal
+    # control fails. Treat that warning as an error; the adapter sanitizes provider
+    # failures to ``mfa_required``.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        return getpass.getpass("myAir email verification code: ")
 
 
 def main() -> None:
@@ -21,7 +39,12 @@ def main() -> None:
 
     store = NightlyStore(Settings.from_env().db_path)
     store.initialize()
-    count = ingest_myair(ResMedMyAirAdapter(username, password), store, args.start, args.end)
+    count = ingest_myair(
+        ResMedMyAirAdapter(username, password, mfa_code_provider=_read_mfa_code),
+        store,
+        args.start,
+        args.end,
+    )
     print(f"Imported {count} nightly record(s) from myAir")
 
 
