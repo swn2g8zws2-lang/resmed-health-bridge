@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import date
 from pathlib import Path
 
 from .models import NightlyRecord
+
+
+def _supports_posix_permissions() -> bool:
+    """Return whether chmod mode bits provide the filesystem access control."""
+    return os.name != "nt"
 
 
 class NightlyStore:
@@ -22,9 +28,10 @@ class NightlyStore:
             database.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             if database.parent.is_symlink():
                 raise ValueError("database directory must not be a symbolic link")
-            if parent_existed and database.parent.stat().st_mode & 0o077:
-                raise PermissionError("database directory must have mode 0700 or stricter")
-            database.parent.chmod(0o700)
+            if _supports_posix_permissions():
+                if parent_existed and database.parent.stat().st_mode & 0o077:
+                    raise PermissionError("database directory must have mode 0700 or stricter")
+                database.parent.chmod(0o700)
             if database.is_symlink():
                 raise ValueError("database path must not be a symbolic link")
         with self._connect() as connection:
@@ -39,7 +46,7 @@ class NightlyStore:
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-        if self.path != ":memory:":
+        if self.path != ":memory:" and _supports_posix_permissions():
             Path(self.path).chmod(0o600)
 
     def upsert(self, record: NightlyRecord) -> None:

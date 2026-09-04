@@ -1,4 +1,6 @@
+import os
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -39,6 +41,7 @@ def test_invalid_range_is_rejected(tmp_path):
         populated(tmp_path).therapy_range(date(2026, 1, 2), date(2026, 1, 1))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not Windows ACLs")
 def test_database_permissions_are_owner_only(tmp_path):
     path = tmp_path / "sensitive.sqlite3"
     NightlyStore(path).initialize()
@@ -49,18 +52,40 @@ def test_database_permissions_are_owner_only(tmp_path):
 
 def test_tilde_path_is_expanded_and_directory_is_private(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     store = NightlyStore("~/private/cache.sqlite3")
     store.initialize()
     assert store.path == str(tmp_path / "private" / "cache.sqlite3")
-    assert (tmp_path / "private").stat().st_mode & 0o777 == 0o700
-    assert (tmp_path / "private" / "cache.sqlite3").stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert (tmp_path / "private").stat().st_mode & 0o777 == 0o700
+        assert (tmp_path / "private" / "cache.sqlite3").stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not Windows ACLs")
 def test_insecure_preexisting_directory_is_rejected(tmp_path):
     directory = tmp_path / "private"
     directory.mkdir(mode=0o755)
     with pytest.raises(PermissionError, match="0700"):
         NightlyStore(directory / "cache.sqlite3").initialize()
+
+
+def test_windows_does_not_apply_posix_mode_checks(tmp_path, monkeypatch):
+    directory = tmp_path / "private"
+    directory.mkdir(mode=0o755)
+    path = directory / "cache.sqlite3"
+    monkeypatch.setattr(
+        "resmed_health_bridge.storage._supports_posix_permissions", lambda: False
+    )
+
+    def reject_chmod(self, mode):
+        raise AssertionError("Windows storage initialization must not use POSIX chmod")
+
+    monkeypatch.setattr(Path, "chmod", reject_chmod)
+    NightlyStore(path).initialize()
+
+    assert path.exists()
+    assert not path.with_name(path.name + "-wal").exists()
+    assert not path.with_name(path.name + "-shm").exists()
 
 
 def test_query_range_is_bounded(tmp_path):

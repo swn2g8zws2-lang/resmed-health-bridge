@@ -50,6 +50,14 @@ pip install -e '.[dev]'
 cp .env.example .env
 ```
 
+On POSIX systems, storage initialization rejects a pre-existing database directory
+that is accessible by group or other users, then enforces mode `0700` on the directory
+and `0600` on the database. Windows access is governed by ACLs rather than POSIX mode
+bits, so the bridge preserves the directory's inherited ACL instead of applying or
+rejecting meaningless numeric modes. Put the database beneath a private per-user
+directory (for example, `%LOCALAPPDATA%`) and restrict its ACL to the account running
+the bridge. Symbolic-link checks and SQLite sidecar protections apply on every platform.
+
 `.env` is ignored by Git. The application reads configuration from the process
 environment; it does not parse `.env` itself. Export variables manually or use a trusted
 secret manager/process supervisor.
